@@ -45,74 +45,73 @@ def extract_GenbankMetadata(input_filename, gbff_raw_dir):
 
 
 def extract_GenbankFeatures(input_filename, gbff_raw_dir, assembly_faa_dir):
-	'''
-	Large function to process  that extracts all relevant genbank data
-	Extracts CDS features
-	Writes all CDS to ./assembly folder
-	'''
-	assembly_id = generate_AssemblyId(input_gbff_file=input_filename)
-	store_rows = []
-	with open(pjoin(assembly_faa_dir, assembly_id+'.faa'),'w') as outfile:
-		n = 0
-		for x, record in enumerate(SeqIO.parse(pjoin(gbff_raw_dir,input_filename),'gb')):
-			## extract releavant CDS features ##
-			for f in record.features:
-				if f.type=='CDS':
-					try:
-						refseq_locus_tag = f.qualifiers['locus_tag'][0]
-					except:
-						refseq_locus_tag = 'NA'
-					try:
-						refseq_product = f.qualifiers['product'][0]
-					except:
-						refseq_product = 'NA'
-					try:
-						refseq_gene = f.qualifiers['gene'][0]
-					except:
-						refseq_gene = 'NA'
-					try: 
-						reseq_translation = f.qualifiers['translation'][0]
-					except:
-						reseq_translation = 'NA'
-					##
-					if reseq_translation == 'NA':
-						pseudo_check = 'p'
-					else:
-						pseudo_check = 'g'
-					#internal assembly id, internal contig id, internal locus tag, refseq locus tag, cds start, cds end, cds strand, refseq product, refseq gene
-					locus_tag_string = str(n).zfill(5) # generates a buffer of up to 5 zeroes so all locus_tag have same length
-					locus_tag = assembly_id+'_'+locus_tag_string
-					# check that f.location gives the cds coordinates and not the whole contig coordinates
-					if len(f.location.parts) > 1:
-						start_cds = f.location.parts[1].start
-						end_cds = f.location.parts[1].end
-					else:
-						start_cds = f.location.start.position
-						end_cds = f.location.end.position
-					# store in list
-					store_rows.append(
-						[
-						assembly_id,
-						assembly_id+'_'+str(x), #contig_id
-						locus_tag,
-						refseq_locus_tag,
-						start_cds,
-						end_cds,
-						f.location.strand,
-						refseq_product,
-						refseq_gene,
-						pseudo_check
-						])
-					n+=1
-					if reseq_translation == 'NA':
-						continue
-					## Write CDS to file ##
-					outfile.write('>{} {}\n'.format(locus_tag, refseq_locus_tag))
-					outfile.write('{}\n'.format(reseq_translation))
-		## return genbank features
-		df_gbf = pd.DataFrame(store_rows,columns=['assembly_id','contig_id','locus_tag','refseq_locus_tag','cds_start','cds_end','strand','refseq_product','refseq_gene','pseudo_check'])
-		return(df_gbf)
-
+    '''
+    Large function to process  that extracts all relevant genbank data
+    Extracts CDS features
+    Writes all CDS to ./assembly folder
+    '''
+    assembly_id = generate_AssemblyId(input_gbff_file=input_filename)
+    store_rows = []
+    with open(pjoin(assembly_faa_dir, assembly_id+'.faa'),'w') as outfile:
+        n = 0
+        for x, record in enumerate(SeqIO.parse(pjoin(gbff_raw_dir,input_filename),'gb')):
+            ## extract relevant CDS features ##
+            for f in record.features:
+                if f.type=='CDS':
+                    try:
+                        refseq_locus_tag = f.qualifiers['locus_tag'][0]
+                    except:
+                        refseq_locus_tag = 'NA'
+                    try:
+                        refseq_product = f.qualifiers['product'][0]
+                    except:
+                        refseq_product = 'NA'
+                    try:
+                        refseq_gene = f.qualifiers['gene'][0]
+                    except:
+                        refseq_gene = 'NA'
+                    try: 
+                        reseq_translation = f.qualifiers['translation'][0]
+                    except:
+                        reseq_translation = 'NA'
+                    ##
+                    if reseq_translation == 'NA':
+                        pseudo_check = 'p'
+                    else:
+                        pseudo_check = 'g'
+                    # internal assembly id, internal contig id, internal locus tag, refseq locus tag, cds start, cds end, cds strand, refseq product, refseq gene
+                    locus_tag_string = str(n).zfill(5) # generates a buffer of up to 5 zeroes so all locus_tag have same length
+                    locus_tag = assembly_id+'_'+locus_tag_string
+                    # check that f.location gives the cds coordinates and not the whole contig coordinates
+                    if len(f.location.parts) > 1:
+                        start_cds = int(f.location.parts[1].start)
+                        end_cds = int(f.location.parts[1].end)
+                    else:
+                        start_cds = int(f.location.start)
+                        end_cds = int(f.location.end)
+                    # store in list
+                    store_rows.append(
+                        [
+                        assembly_id,
+                        assembly_id+'_'+str(x), #contig_id
+                        locus_tag,
+                        refseq_locus_tag,
+                        start_cds,
+                        end_cds,
+                        f.location.strand,
+                        refseq_product,
+                        refseq_gene,
+                        pseudo_check
+                        ])
+                    n+=1
+                    if reseq_translation == 'NA':
+                        continue
+                    ## Write CDS to file ##
+                    outfile.write('>{} {}\n'.format(locus_tag, refseq_locus_tag))
+                    outfile.write('{}\n'.format(reseq_translation))
+        ## return genbank features
+        df_gbf = pd.DataFrame(store_rows,columns=['assembly_id','contig_id','locus_tag','refseq_locus_tag','cds_start','cds_end','strand','refseq_product','refseq_gene','pseudo_check'])
+        return(df_gbf)
 
 def make_BlastDatabase(assembly_id, assembly_faa_dir, blast_db_path):
 	'''

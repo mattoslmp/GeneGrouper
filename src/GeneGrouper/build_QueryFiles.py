@@ -49,136 +49,118 @@ def filter_BlastHits(df, identity_cutoff, coverage_cutoff):
 
 
 def extract_SeedRegions(assembly_id, upstream_search_length, downstream_search_length, identity_cutoff, coverage_cutoff, hits_cutoff):
-	'''
-	Check for overlaps in seed hits. When this occurs, pick the best hit for overlap.
-	Extract x basepairs upstream and downstream of a seed blast hit.
-	Write to sql database under table 'seed_regions'
-	'''
+    '''
+    Check for overlaps in seed hits. When this occurs, pick the best hit for overlap.
+    Extract x basepairs upstream and downstream of a seed blast hit.
+    Write to sql database under table 'seed_regions'
+    '''
 
-#--------- Troubleshooting --------#
-# pd.set_option('display.max_columns', None)
-# upstream_search_length, downstream_search_length, identity_cutoff, coverage_cutoff, hits_cutoff = 10000,10000,20,80, 1
+    try:
+        df_hits = pd.read_csv(pjoin('temp_blast_results', assembly_id + '.csv'),
+                              names=['qseqid', 'sseqid', 'mismatch', 'positive', 'gaps', 'ppos', 'pident', 'qcovs',
+                                     'evalue', 'bitscore', 'qframe', 'sframe', 'sstart', 'send', 'slen', 'qstart',
+                                     'qend', 'qlen'])
+    except:
+        return pd.DataFrame()
 
-# # UserInput_main_dir = '/projects/b1042/HartmannLab/alex/GeneGrouper_test/testbed/dataset1/test1'#'/Users/owlex/Dropbox/Documents/Northwestern/Hartmann_Lab/syntenease_project/gtr/testbed/dataset1/test1'
-# UserInput_main_dir = '/Users/owlex/Dropbox/Documents/Northwestern/Hartmann_Lab/syntenease_project/gtr/testbed/dataset3/test1'
-# UserInput_output_dir_name = pjoin(UserInput_main_dir,'pdua')
-# os.chdir(UserInput_main_dir)
-# conn = sql.connect(pjoin(UserInput_main_dir,'genomes.db')) # genome database holds all base info
-# conn2 = sql.connect(pjoin(UserInput_output_dir_name,'seed_results.db')) # seed_results database holds all seed search specific info. 
+    ## filter hit results, exit function if not hits pass cutoffs
+    df_hits = filter_BlastHits(df=df_hits, identity_cutoff=identity_cutoff, coverage_cutoff=coverage_cutoff)
+    if len(df_hits) == 0:
+        return pd.DataFrame()
 
+    ## read in whole genome info
+    df_g = pd.read_sql_query(
+        "SELECT contig_id, locus_tag, cds_start, cds_end, strand, pseudo_check from gb_features WHERE assembly_id = '{}' ".format(
+            assembly_id), sql.connect('genomes.db'))
 
-# assembly_id = 'GCF_009800085'  #GCF_009800085_02009     dbscan_label 3     ,global_strand -1 has more
-# assembly_id = 'GCF_000583895' #GCF_000583895_02788     dbscan_label 13    ,global_strand 1  has fewer
+    ## merge genome level data with blast hit results. sort by identity and evalue so that best hits are at the top of the table
+    df_hits = df_g.merge(df_hits[['sseqid', 'pident', 'qcovs', 'evalue']], left_on='locus_tag', right_on='sseqid',
+                         how='inner')
 
-# assembly_id = 'GCF_001077835'
+    # if there are multiple hits that are identical, keep the one with the highest evalue
+    df_hits = df_hits.groupby('locus_tag').first().reset_index()
 
-# assembly_id = 'GCF_000251025'
+    df_hits = df_hits.sort_values(['pident', 'evalue'], ascending=[False, False])
 
-#--------- Troubleshooting --------#
+    # keep only n total hits (default is all hits)
+    if type(hits_cutoff) == int:
+        df_hits = df_hits.iloc[:hits_cutoff, :]
 
-	try:
-		df_hits = pd.read_csv(pjoin('temp_blast_results',assembly_id+'.csv'),names=['qseqid','sseqid','mismatch', 'positive','gaps', 'ppos','pident','qcovs','evalue','bitscore','qframe','sframe','sstart', 'send', 'slen', 'qstart', 'qend', 'qlen'])
-	except:
-		return(pd.DataFrame())
-		pass
+    ## define upstream and downstream search lengths. The distance inputs for upstream/start and downstream/end are switched when the seed gene is in the -1 frame
+    ## The usl and dsl are not strand specific now. They are relative to the genomes' upstream and downstream positions
+    df_hits['usl'] = np.where(df_hits['strand'] == 1, df_hits['cds_start'] - upstream_search_length,
+                              df_hits['cds_start'] - downstream_search_length)
+    df_hits['dsl'] = np.where(df_hits['strand'] == 1, df_hits['cds_end'] + downstream_search_length,
+                              df_hits['cds_end'] + upstream_search_length)
 
-	## filter hit results, exit function if not hits pass cutoffs
-	df_hits = filter_BlastHits(df=df_hits, identity_cutoff=identity_cutoff, coverage_cutoff=coverage_cutoff)
-	if len(df_hits) == 0:
-		return(pd.DataFrame())
-		pass
+    ## for each contig, test for overlapping region ranges. Keep the region with the best hit.
+    ## append subsets to new df called df_hits_parsed
+    df_hits_parsed = pd.DataFrame()
+    for cid in df_hits['contig_id'].unique().tolist():
+        # Looping over contigs to prevent instances where they overlap but are not on the same contig.
+        df_hits_contig = df_hits[df_hits['contig_id'] == cid]
+        for hid in df_hits_contig['locus_tag']:
+            try:
+                # create range to compare all other ranges to
+                hid_x1, hid_x2 = df_hits_contig[df_hits_contig['contig_id'] == cid][df_hits_contig['locus_tag'] == hid]['usl'].item(), \
+                                 df_hits_contig[df_hits_contig['contig_id'] == cid][df_hits_contig['locus_tag'] == hid]['dsl'].item()
+                # test for overlap with all other ranges on the same contig
+                df_hits_contig['overlap'] = df_hits_contig[df_hits_contig['contig_id'] == cid].apply(
+                    lambda x: test_RegionOverlap(x1=hid_x1, x2=hid_x2, y1=x['usl'], y2=x['dsl']), axis=1)
+                keep_index = (df_hits_contig['overlap'] == True).idxmax()
+                df_hits_contig['overlap_representative'] = np.where(df_hits_contig.index == keep_index, True, False)
+                # remove rows that are not repesentatives but do overlap. keep everything else.
+                df_hits_contig = df_hits_contig[
+                    (df_hits_contig['overlap'] == False) | (df_hits_contig['overlap_representative'] == True) | (
+                                df_hits_contig['overlap']).isnull() == True]
+            except:
+                continue
+        df_hits_parsed = pd.concat([df_hits_parsed, df_hits_contig])
 
+    ## build a dataframe that contains genes upsteam and downstream of boundaries for each seed blast hit ##
+    df_rkeep = pd.DataFrame()
+    for h in df_hits_parsed.iterrows():
 
-	## read in whole genome info
-	df_g = pd.read_sql_query("SELECT contig_id, locus_tag, cds_start, cds_end, strand, pseudo_check from gb_features WHERE assembly_id = '{}' ".format(assembly_id), sql.connect('genomes.db'))
+        # get coordinates for upstream and downstream gene boundaries
 
+        # ----- attempt start ----- #
+        # cds_start for strand == 1
+        # cds_end for strand == -1
+        if h[1][4] == 1:
+            cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_start'].tolist()
+            usl_locus_tag_bp = min(cds_search_list, key=lambda x: abs(x - h[1][10]))
 
-	## merge genome level data with blast hit results. sort by identity and evalue so that best hits are at the top of the table
-	df_hits = df_g.merge(df_hits[['sseqid','pident','qcovs','evalue']],left_on='locus_tag',right_on='sseqid',how='inner')
+            cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_end'].tolist()
+            dsl_locus_tag_bp = min(cds_search_list, key=lambda x: abs(x - h[1][11]))
 
+        if h[1][4] == -1:
+            cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_start'].tolist()
+            usl_locus_tag_bp = min(cds_search_list, key=lambda x: abs(x - h[1][10]))
 
-	# if there are multiple hits that are identical, keep the one with the highest evalue
-	df_hits = df_hits.groupby('locus_tag').first().reset_index()
+            cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_end'].tolist()
+            dsl_locus_tag_bp = min(cds_search_list, key=lambda x: abs(x - h[1][11]))
 
-	df_hits = df_hits.sort_values(['pident','evalue'],ascending=[False,False])
+        # subset the main genome dataframe to contain only ORFs that are within the designated bounds
+        if h[1][4] == 1:
+            df_r = df_g[df_g['contig_id'] == h[1][1]][
+                (df_g['cds_end'] >= usl_locus_tag_bp) & (df_g['cds_start'] <= dsl_locus_tag_bp)]
+        if h[1][4] == -1:
+            df_r = df_g[df_g['contig_id'] == h[1][1]][
+                (df_g['cds_end'] >= usl_locus_tag_bp) & (df_g['cds_start'] <= dsl_locus_tag_bp)]
+        # ----- attempt end ----- #
 
-	# keep only n total hits (default is all hits)
-	if type(hits_cutoff) == int:
-		df_hits = df_hits.iloc[:hits_cutoff, :]
+        # append the subsetted dataframe to a new dataframe that will contain all region extractions
+        df_r['region_id'] = h[1][0]
+        df_rkeep = pd.concat([df_rkeep, df_r], ignore_index=True)
 
+    ## add blast data to the extracted regions, remove unneeded columns, and return the dataframe
+    df_rkeep['assembly_id'] = assembly_id
+    df_rkeep = df_rkeep[['region_id', 'assembly_id', 'contig_id', 'locus_tag', 'strand', 'pseudo_check']]
+    df_rkeep = df_rkeep.merge(df_hits_parsed[['sseqid', 'pident', 'qcovs', 'evalue']], left_on='region_id',
+                              right_on='sseqid')
+    df_rkeep = df_rkeep.drop(columns='sseqid')
 
-	## define upstream and downstream search lengths. The distance inputs for upstream/start and downstream/end are switched when the seed gene is in the -1 frame
-	## The usl and dsl are not strand specific now. They are relative to the genomes' upstream and downstream positions
-	df_hits['usl'] = np.where(df_hits['strand']==1, df_hits['cds_start'] - upstream_search_length, df_hits['cds_start'] - downstream_search_length)
-	df_hits['dsl'] = np.where(df_hits['strand']==1, df_hits['cds_end'] + downstream_search_length, df_hits['cds_end'] + upstream_search_length)
-
-	## for each contig, test for overlapping region ranges. Keep the region with the best hit.
-	## append subsets to new df called df_hits_parsed
-	df_hits_parsed = pd.DataFrame()
-	for cid in df_hits['contig_id'].unique().tolist():
-		#Looping over contigs to prevent instances where they overlap but are not on the same contig.
-		df_hits_contig = df_hits[df_hits['contig_id']==cid]
-		for hid in df_hits_contig['locus_tag']:
-			try:
-				# create range to compare all other ranges to			
-				hid_x1, hid_x2 = df_hits_contig[df_hits_contig['contig_id']==cid][df_hits_contig['locus_tag']==hid]['usl'].item(), df_hits_contig[df_hits_contig['contig_id']==cid][df_hits_contig['locus_tag']==hid]['dsl'].item()
-				# test for overlap with all other ranges on the same contig
-				df_hits_contig['overlap'] = df_hits_contig[df_hits_contig['contig_id']==cid].apply(lambda x: test_RegionOverlap(x1=hid_x1, x2=hid_x2, y1=x['usl'], y2=x['dsl']), axis=1)
-				keep_index  = (df_hits_contig['overlap']==True).idxmax()
-				df_hits_contig['overlap_representative'] = np.where(df_hits_contig.index==keep_index,True,False)
-				# remove rows that are not repesentatives but do overlap. keep everything else.
-				df_hits_contig = df_hits_contig[ (df_hits_contig['overlap']==False) | (df_hits_contig['overlap_representative'] == True) | (df_hits_contig['overlap']).isnull() == True ]
-			except:
-				continue
-		df_hits_parsed = df_hits_parsed.append(df_hits_contig)
-
-
-
-	## build a dataframe that contains genes upsteam and downstream of boundaries for each seed blast hit ##
-	df_rkeep = pd.DataFrame()
-	for h in df_hits_parsed.iterrows():
-
-
-		# get coordinates for upstream and downstream gene boundaries
-
-		# ----- attempt start ----- #
-		# cds_start for strand == 1 
-		# cds_end for strand == -1
-		if h[1][4] == 1:
-			cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_start'].tolist()
-			usl_locus_tag_bp = min(cds_search_list, key = lambda x: abs(x-h[1][10]))
-
-			cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_end'].tolist()
-			dsl_locus_tag_bp = min(cds_search_list, key = lambda x: abs(x-h[1][11]))
-
-		if h[1][4] == -1:
-			cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_start'].tolist()
-			usl_locus_tag_bp = min(cds_search_list, key = lambda x: abs(x-h[1][10]))
-
-			cds_search_list = df_g[df_g['contig_id'] == h[1][1]]['cds_end'].tolist()
-			dsl_locus_tag_bp = min(cds_search_list, key = lambda x: abs(x-h[1][11]))
-
-
-
-		# subset the main genome dataframe to contain only ORFs that are within the designated bounds
-		if h[1][4] == 1:	
-			df_r = df_g[ df_g['contig_id'] == h[1][1] ][ ( df_g['cds_end'] >= usl_locus_tag_bp) & (df_g['cds_start'] <= dsl_locus_tag_bp ) ]
-		if h[1][4] == -1:	
-			df_r = df_g[ df_g['contig_id'] == h[1][1] ][ ( df_g['cds_end'] >= usl_locus_tag_bp) & (df_g['cds_start'] <= dsl_locus_tag_bp ) ]
-		# ----- attempt end ----- #
-
-		# append the subsetted dataframe to a new dataframe that will contain all region extractions
-		df_r['region_id'] = h[1][0]
-		df_rkeep = df_rkeep.append(df_r,ignore_index=True)
-
-	## add blast data to the extracted regions, remove unneeded columns, and return the dataframe
-	df_rkeep['assembly_id'] = assembly_id
-	df_rkeep = df_rkeep[['region_id','assembly_id','contig_id','locus_tag','strand','pseudo_check']]
-	df_rkeep = df_rkeep.merge(df_hits_parsed[['sseqid','pident','qcovs','evalue']], left_on='region_id',right_on='sseqid')
-	df_rkeep = df_rkeep.drop(columns='sseqid')
-
-
-	return(df_rkeep)
+    return df_rkeep
 
 
 def write_RegionSeqsToFile(assembly_id, output_dir_name):

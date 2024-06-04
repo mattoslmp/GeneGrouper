@@ -20,73 +20,73 @@ from output_RegionResults import subset_SimilarityMatrix
 import subprocess
 from subprocess import DEVNULL, STDOUT, check_call
 
-def convert_ToGGGenesInput(df_m,filter_on):
-	'''
-	'''
-	df_gggenes = pd.DataFrame()
-	for clabel in df_m[filter_on].unique().tolist():
-		print(str(int(clabel)))
-		df_cl = df_m[df_m[filter_on] == clabel]
-		df_cl = df_cl.sort_values(by=['new_pos'],ascending=True)
+def convert_ToGGGenesInput(df_m, filter_on):
+    '''
+    '''
+    df_gggenes = pd.DataFrame()
+    for clabel in df_m[filter_on].unique().tolist():
+        print(str(int(clabel)))
+        df_cl = df_m[df_m[filter_on] == clabel]
+        df_cl = df_cl.sort_values(by=['new_pos'], ascending=True)
 
-		# align genes to normalized position of the seed
-		start_bp = df_cl[df_cl['is_seed']==1]['cds_start1'].item()
+        # align genes to normalized position of the seed
+        start_bp = df_cl[df_cl['is_seed'] == 1]['cds_start1'].item()
 
-		# process downstream list
-		cds_list = list()
-		for row in df_cl[df_cl['new_pos']>=0].iterrows():
-			row_pos1 = len(row[1])-2
-			row_pos2 = len(row[1])-1
-			cds_list.append(row[1][row_pos1])
-			cds_list.append(row[1][row_pos2])
+        # process downstream list
+        cds_list = list()
+        for row in df_cl[df_cl['new_pos'] >= 0].iterrows():
+            row_pos1 = len(row[1]) - 2
+            row_pos2 = len(row[1]) - 1
+            cds_list.append(row[1][row_pos1])
+            cds_list.append(row[1][row_pos2])
 
-		downstream_xlist = [0]
-		while len(cds_list) >1:
-			if cds_list[0] == start_bp:
-				x1 = cds_list[1] - cds_list[0]
-				downstream_xlist.append(x1)
-				del cds_list[0]
-				continue
+        downstream_xlist = [0]
+        while len(cds_list) > 1:
+            if cds_list[0] == start_bp:
+                x1 = cds_list[1] - cds_list[0]
+                downstream_xlist.append(x1)
+                del cds_list[0]
+                continue
 
-			x1 = cds_list[1] - cds_list[0] + x1
-			del cds_list[0]
-			downstream_xlist.append(x1)
+            x1 = cds_list[1] - cds_list[0] + x1
+            del cds_list[0]
+            downstream_xlist.append(x1)
 
-		# process upstream list
-		cds_list = list()
-		for row in df_cl[df_cl['new_pos']<=0].iterrows():
-			row_pos1 = len(row[1])-2
-			row_pos2 = len(row[1])-1
-			cds_list.append(row[1][row_pos1])
-			cds_list.append(row[1][row_pos2])
+        # process upstream list
+        cds_list = list()
+        for row in df_cl[df_cl['new_pos'] <= 0].iterrows():
+            row_pos1 = len(row[1]) - 2
+            row_pos2 = len(row[1]) - 1
+            cds_list.append(row[1][row_pos1])
+            cds_list.append(row[1][row_pos2])
 
-		cds_list.reverse()
-		del cds_list[0]
-			
-		upstream_xlist = [0]
-		while len(cds_list) >1:
-			if cds_list[0] == start_bp:
-				x1 = cds_list[1] - cds_list[0]
-				upstream_xlist.append(x1)
-				del cds_list[0]
-				continue
+        cds_list.reverse()
+        del cds_list[0]
 
-			x1 = cds_list[1] - cds_list[0] + x1
-			del cds_list[0]
-			upstream_xlist.append(x1)
-		del upstream_xlist[0]
-		upstream_xlist.reverse()
+        upstream_xlist = [0]
+        while len(cds_list) > 1:
+            if cds_list[0] == start_bp:
+                x1 = cds_list[1] - cds_list[0]
+                upstream_xlist.append(x1)
+                del cds_list[0]
+                continue
 
-		# map values back to dataframe
-		upstream_xlist = np.asarray(upstream_xlist).reshape(int(len(upstream_xlist)/2),2)
-		downstream_xlist = np.asarray(downstream_xlist).reshape(int(len(downstream_xlist)/2),2)
-		full_xlist = np.concatenate((upstream_xlist,downstream_xlist), axis=0)
+            x1 = cds_list[1] - cds_list[0] + x1
+            del cds_list[0]
+            upstream_xlist.append(x1)
+        del upstream_xlist[0]
+        upstream_xlist.reverse()
 
-		df_cl['norm_start'] = full_xlist[:,0]
-		df_cl['norm_end'] = full_xlist[:,1]
-		df_gggenes = df_gggenes.append(df_cl[['locus_tag','norm_start','norm_end']])
+        # map values back to dataframe
+        upstream_xlist = np.asarray(upstream_xlist).reshape(int(len(upstream_xlist) / 2), 2)
+        downstream_xlist = np.asarray(downstream_xlist).reshape(int(len(downstream_xlist) / 2), 2)
+        full_xlist = np.concatenate((upstream_xlist, downstream_xlist), axis=0)
 
-	return(df_gggenes)
+        df_cl['norm_start'] = full_xlist[:, 0]
+        df_cl['norm_end'] = full_xlist[:, 1]
+        df_gggenes = pd.concat([df_gggenes, df_cl[['locus_tag', 'norm_start', 'norm_end']]])
+
+    return df_gggenes
 
 def align_NormPositions(df_m):
 	'''

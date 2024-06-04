@@ -97,54 +97,51 @@ def cluster_DBSCAN(jac_dist, table_output_suffix, min_group_size):
 	df_cr = df_cluster_labels[[str(best_cluster_result)]]
 	return(df_cr)
 
+def determine_ClusterRepresentative(df_cr, df_c):
+    '''
+    Find the most representative seed_region for each cluster. 
+    Currently using the seed_region with the lowest mean dissimilarity 
+    Uses the index from df_c, which is a seed_regionX<ortho clustering id> presence/absence matrix. This makes subsequent matrix operations fast.
+    IMPORTANT: Uses the jac_dist global 
+    '''
 
+    df_clusterep = pd.DataFrame()
 
-def determine_ClusterRepresentative(df_cr,df_c):
-	'''
-	Find the most representative seed_region for each cluster. 
-	Currently using the seed_region with the lowest mean dissimilarity 
-	Uses the index from df_c, which is a seed_regionX<ortho clustering id> presence/absence matrix. This makes subsequent matrix operations fast.
-	IMPORTANT: Uses the jac_dist global 
-	'''
+    df_cr['seed_region_id'] = df_c.index.tolist()
+    for cluster_id in sorted((df_cr.iloc[:,0]).unique()):
+        # get the index positions of each seed_region_id for the current cluster
+        # make a relational set of indices for the subsetted cluster
+        seed_region_indices = np.array(df_cr[df_cr.iloc[:,0] == cluster_id].index.tolist())
+        seed_region_indices = np.column_stack((seed_region_indices, np.asarray(range(0, len(seed_region_indices)))))
 
-	df_clusterep = pd.DataFrame()
+        # filter the full distance matrix for those in cluster
+        interdist_array = np.take(jac_dist, seed_region_indices[:, 0], axis=0)
+        interdist_array = np.take(interdist_array, seed_region_indices[:, 0], axis=1)
 
-	df_cr['seed_region_id'] = df_c.index.tolist()
-	for cluster_id in sorted((df_cr.iloc[:,0]).unique()):
-		# get the index postions of each seed_region_id for the current cluster
-		# make a relational set of indices for the subsetted cluster
-		seed_region_indices = np.array(df_cr[df_cr.iloc[:,0]==cluster_id].index.tolist())
-		seed_region_indices = np.column_stack((seed_region_indices,np.asarray(range(0,len(seed_region_indices)))))
+        n_seedregions = len(interdist_array)
+        # for each row, calculate the mean dissimilarity. subtract by 1 to correct for self comparison.
+        mean_dissimilarity_array = np.asarray([(sum(i) / (n_seedregions - 1)) for i in interdist_array])
+        mean_dissimilarity_array = np.column_stack((np.asarray(seed_region_indices), mean_dissimilarity_array))
+        # sort the list to retrieve entry with lowest mean
+        lowest_mean_dis_info = mean_dissimilarity_array[mean_dissimilarity_array[:, 2].argsort()][0]
+        # retrieve the row with dissimilarities that correspond to the region with the lowest mean dissimilarity. use the reduced index to find.
+        # columns for lowest_relative_dis_info goes: full index, subsetted index, mean dissimilarity
+        lowest_relative_dis = interdist_array[:, int(lowest_mean_dis_info[1])]
+        ## put all the pieces together into a single array:
+        # add column with the representative seed_region index
+        mean_dissimilarity_array = np.column_stack((np.full(shape=n_seedregions, fill_value=lowest_mean_dis_info[0]), mean_dissimilarity_array))
+        # add column with cluster_id 
+        mean_dissimilarity_array = np.column_stack((np.full(shape=n_seedregions, fill_value=cluster_id), mean_dissimilarity_array))
+        # add column with dissimilarity values relative to the region with lowest dissimilarity
+        mean_dissimilarity_array = np.column_stack((mean_dissimilarity_array, lowest_relative_dis))
+        # add to master pandas dataframe. label representative uses number from full_index_pos
+        colnames = ['dbscan_label', 'label_representative', 'full_index_pos', 'relative_index_pos', 'mean_dissimilarity', 'representative_relative_dissimilarity']
+        df_clusterep = pd.concat([df_clusterep, pd.DataFrame(mean_dissimilarity_array, columns=colnames)])
 
-		# filter the full distance matrix for those in cluster
-		interdist_array =  np.take(jac_dist,seed_region_indices[:,0],axis=0)
-		interdist_array =  np.take(interdist_array,seed_region_indices[:,0],axis=1)
-
-		n_seedregions = len(interdist_array)
-		# for each row, calculate the mean dissimilarity. subtract by 1 to correct for self comparison.
-		mean_dissimilarity_array = np.asarray([(sum(i)/(n_seedregions-1)) for i in interdist_array])
-		mean_dissimilarity_array = np.column_stack((np.asarray(seed_region_indices),mean_dissimilarity_array))
-		# sort the list to retrieve entry with lowest mean
-		lowest_mean_dis_info = mean_dissimilarity_array[mean_dissimilarity_array[:,2].argsort()][0]
-		# retrieve the row with dissimilarites that correspond to the region with the lowest mean dissimilarity. use the reduced index to find.
-		# columns for lowest_relative_dis_info goes: full index, subsetted index, mean dissimilarity
-		lowest_relative_dis = interdist_array[:,int(lowest_mean_dis_info[1])]
-		## put all the pieces together into a single array:
-		# add column with the representative seed_region index
-		mean_dissimilarity_array = np.column_stack((np.full(shape=n_seedregions,fill_value=lowest_mean_dis_info[0]),mean_dissimilarity_array))
-		# add column with cluster_id 
-		mean_dissimilarity_array = np.column_stack((np.full(shape=n_seedregions,fill_value=cluster_id),mean_dissimilarity_array))
-		# add column with disimilartiy values relative to the region with lowest dissimilarity
-		mean_dissimilarity_array = np.column_stack((mean_dissimilarity_array,lowest_relative_dis))
-		# add to master pandas dataframe. label representative uses number from full_index_pos
-		colnames = ['dbscan_label','label_representative','full_index_pos','relative_index_pos','mean_dissimilarity','representative_relative_dissimilarity']
-		df_clusterep = df_clusterep.append(pd.DataFrame(mean_dissimilarity_array,columns=colnames))
-
-
-	# add seed_region_id to the df_clusterep dataframe. save output
-	df_clusterep = df_clusterep.sort_values(by='full_index_pos')
-	df_clusterep['seed_region_id'] = df_cr['seed_region_id'].tolist()
-	return(df_clusterep)
+    # add seed_region_id to the df_clusterep dataframe. save output
+    df_clusterep = df_clusterep.sort_values(by='full_index_pos')
+    df_clusterep['seed_region_id'] = df_cr['seed_region_id'].tolist()
+    return(df_clusterep)
 
 
 def update_FinalCluster(df, cluster_dict):
